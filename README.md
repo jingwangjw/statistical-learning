@@ -1,5 +1,5 @@
 # statistical-learning
-Final project for UIUC statistical learning course (Script: R)
+Final project for UIUC statistical learning course 
 
 ## Classification of Schools and Analysis of Academic Performance in Portuguese for High School Students
 #### Contributors: Xiaomian Wu, Yanxuan Wang, Jing Wang, Min Jin
