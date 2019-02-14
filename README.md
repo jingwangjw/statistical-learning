@@ -2,10 +2,9 @@
 Final project for UIUC statistical learning course
 
 # Classification of Schools and Analysis of Academic Performance in Portuguese for High School Students
-### Contributors: Xiaomian Wu, Yanxuan Wang, Jing Wang, Min Jin
-### Date: 5/12/2017
+#### Contributors: Xiaomian Wu, Yanxuan Wang, Jing Wang, Min Jin
+#### Date: 5/12/2017
 
-# Introduction
 ## Data
 
 We obtained this Student Performance Data Set from the UCI website. It contains 33 attributes of 649 students(shown below) from two Portuguese high schools, Gabriel Pereira (GP) and Mousinho da Silveira(MS). The data was collected by school reports and questionaires. It provides information about students’ grades, demographic features, social and school related features. 17 of the 33 attributes are categorical variables and the rest are discrete numeric variables. Among discrete numeric variables, five of them can be treated as continuous numeric variables and three of the five are grades of Portuguese language, which are highly correlated with each other.
