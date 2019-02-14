@@ -1,0 +1,696 @@
+---
+title: "Classification of Schools and Analysis of Academic Performance in Portuguese for High School Students"
+author: "Xiaomian Wu, Yanxuan Wang, Jing Wang, Min Jin"
+date: "5/12/2017"
+output: html_document
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+                      echo=TRUE,eval=FALSE, warning=FALSE, message=FALSE)
+```
+
+## Introduction
+
+#### Data
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+# library and helper functions
+library(caret)
+library(corrplot)
+library(rpart.plot)
+library(rpart)
+library(randomForest)
+library(gbm)
+library(glmnet)
+library(plyr)  
+library(klaR)
+library(MASS)
+
+oob = trainControl(method = "oob")
+cv_5 = trainControl(method = "cv", number = 5)
+
+accuracy = function(actual, predicted){
+  mean(actual == predicted)
+}
+
+rmse = function(actual, predicted) {
+  sqrt(mean((actual - predicted) ^ 2))
+}
+
+get_best_result = function(caret_fit) {
+  best_result = caret_fit$results[as.numeric(rownames(caret_fit$bestTune)), ]
+  rownames(best_result) = NULL
+  best_result
+}
+```
+
+We obtained this [Student Performance Data Set](http://archive.ics.uci.edu/ml/datasets/Student+Performance) from the [UCI website](https://medium.com/towards-data-science). It contains 33 attributes of 649 students(shown below) from two Portuguese high schools, Gabriel Pereira (GP) and Mousinho da Silveira(MS). The data was collected by school reports and questionaires. It provides information about students' grades, demographic features, social and school related features. 17 of the 33 attributes are categorical variables and the rest are discrete numeric variables. Among discrete numeric variables, five of them can be treated as continuous numeric variables and three of the five are grades of Portuguese language, which are highly correlated with each other. 
+
+Basically, the attributes could be divided into three parts, basic information about students themselves and information about their family and information about their school performance. Attributes about students include school, sex, age, guardian, traveltime, activities, alcohol consumption etc. Attributes about their family include parent education and job, family size, quality of family relationships etc. Attributes about school performance include study time, grades, failures of classes etc. 
+
+
+#### Project Goals
+
+In this project, we are going to perform one classification task and one regression task.
+
+First, we will classify or predict which school the students come from based on other attributes. This is a binary classification. Some of the attributes such as `reason` (the reason to choose school) and `address` (student address) suggest some difference between the two school and hence their students. We would like to examine whether it is feasible to predict which school a student attends based on provided attributes.
+
+Second, we are interested in predict a student's first period grade `G1` without using the second period grade `G2` and final grade `G3`, which are highly linearly correlated with `G1`. It would be interesting to examine which attributes affect students' grades the most and possibly provide suggestions on how to improve students' performance in Portuguese class.
+
+
+## Classification: School
+
+We first split the dataset into train data `por_trn` and test data `por_tst` with proportion 4:1. 
+
+```{r}
+set.seed(430)
+student_por = read.csv("student-por.csv", sep=";",header=TRUE)
+dim(student_por)
+
+# Create Train and Test Data
+id = createDataPartition(student_por$G3, p = 0.8, list = F)
+por_trn = student_por[id, ]
+por_tst = student_por[-id, ]
+```
+
+
+#### Data Exploration and Feature Selection
+In this section, we will further understand our dataset with plots and tables. We will aslo apply several variable selection methods, including plots, stepwise methods and lasso, to narrow down the attributes to use in classification.
+
+##### Percentage table for school
+First, we checked the response variable school. As shown in the table below, there are much more information about GP students than MS students. The reason could be that GP is a larger school or GP collects more student information.
+
+```{r, echo=FALSE}
+table(por_trn$school)
+```
+
+##### Density Curve
+As we can see from the plots below, all of them seems to be useful in predicting school. Only GP has students with high absence rates and students from GP tends to have higher grades.
+
+```{r, echo=FALSE}
+featurePlot(por_trn[, c( "absences", "G1", "G2", "G3")], por_trn$school, plot = "density",
+            scales = list(x = list(relation = "free"),  y = list(relation = "free")), adjust= 1.5, pch = "|", 
+            layout = c(4,1), auto.key = list(columns  = 2))
+```
+
+##### Boxplot
+Below is the boxplot of school against age. Most students in GP are below 18 and several are much elder. While one quarter of MS students are above 18. The two schools seem to be different in terms of students' age.
+
+```{r, echo=FALSE}
+boxplot(age~school, data = por_trn, xlab = "School", ylab = "Age")
+```
+
+##### Correlation Plot with school
+The correlation plot of school and other numeric variable is shown below. Medu, Fedu, traveltime, studytime, absences and grades all have some level of correlation with school and could be potential predictors in our model. As we can see, G1, G2 and G3 are highly correlated with each other and we may not want to use all of them in our prediction model. Some of the variables such as Medu, Fedu and traveltime may have interactions or collinearities and need to be treated carefully when building the model.
+
+```{r, echo=FALSE}
+M = cor(data.frame(por_trn[, c(3,7,8,13,14,15,24,25,26,27,28,29,30,31,32,33)], response = as.numeric(por_trn[, 1])))
+corrplot(M, method = "circle")
+```
+
+##### Histogram
+
+Below are histograms of several nominal variables. The graphs suggest that these features vary arcoss schools.
+
+```{r, echo=FALSE}
+ggplot(por_trn,aes(x= address, group = school,fill = school))+
+  geom_bar(position="dodge",stat="count")+theme_bw() 
+ggplot(por_trn,aes(x= reason, group = school,fill = school))+
+  geom_bar(position="dodge",stat="count")+theme_bw()
+ggplot(por_trn,aes(x= Medu, group = school,fill = school))+
+  geom_histogram(position="dodge",binwidth=0.25)+theme_bw()
+ggplot(por_trn,aes(x= Fedu, group = school,fill = school))+
+  geom_histogram(position="dodge",binwidth=0.25)+theme_bw()
+ggplot(por_trn,aes(x= Fjob, group = school,fill = school))+
+  geom_bar(position="dodge",stat="count")+theme_bw()
+ggplot(por_trn,aes(x= traveltime, group = school,fill = school))+
+  geom_histogram(position="dodge",binwidth=0.25)+theme_bw()
+ggplot(por_trn,aes(x= internet, group = school,fill = school))+
+  geom_bar(position="dodge",stat="count")+theme_bw()
+```
+
+##### Boosting importance plot
+
+Below is the variable importance plot and partial importance values from additive boosting model's results. We will consider this result before finalizing the features to be used.
+
+```{r, echo=FALSE}
+set.seed(430)
+gbm_grid =  expand.grid(interaction.depth = 1:5,
+                        n.trees = (1:6) * 500,
+                        shrinkage = c(0.001, 0.01, 0.1),
+                        n.minobsinnode = 10)
+gbm_all_class = train(school ~ .- G1 -G2, data = por_trn,
+                      method = "gbm",
+                      trControl = cv_5,
+                      verbose = FALSE,
+                      tuneGrid = gbm_grid)
+```
+
+```{r, echo=FALSE}
+head(summary(gbm_all_class), 15) # obtain variable inportance plot
+
+gbm_all_class_trn = accuracy(predict(gbm_all_class, por_trn), por_trn$school) # train acc
+gbm_all_class_tst = accuracy(predict(gbm_all_class, por_tst), por_tst$school) # test acc
+```
+
+##### Single Descision Tree
+
+Below is a pruned single decision tree with all the variables excpet for G1 and G2. The tree and importance values are illustrated below to select important features. A relative high tree size is suggested and therefore we might want to consider some complex models later.
+
+```{r, echo=FALSE}
+set.seed(430)
+dt_all_class = rpart(school ~ .- G1 -G2, data = por_trn, method = "class")
+#plotcp(dt_all_class)
+
+dt_all_class_cp = dt_all_class$cptable[which.min(dt_all_class$cptable[,"xerror"]),"CP"]
+dt_class_prune = prune(dt_all_class, cp =dt_all_class_cp)
+prp(dt_class_prune)
+
+head(dt_class_prune$variable.importance, 15)
+
+dt_class_trn = accuracy(predict(dt_class_prune, por_trn, type = "class"), por_trn$school) # train acc
+dt_class_tst = accuracy(predict(dt_class_prune, por_tst, type = "class"), por_tst$school) # test acc
+```
+
+##### LASSO selection
+```{r, echo=FALSE}
+X = model.matrix(school ~ ., por_trn)[, -1]
+y = por_trn$school
+lasso_class = cv.glmnet(X, y, family = "binomial", alpha = 1)
+result_lasso = coef(lasso_class)
+names(which(!(result_lasso == 0)[, 1]))[-1]
+```
+
+##### Stepwise glm selection
+```{r, echo=FALSE}
+# Stepwise glm
+glm_step = step(glm(school ~ ., data = por_trn, family = "binomial"), trace = FALSE)
+# Update glm model 
+(selected_formula = glm_step$formula)
+glm_step_sel = train(selected_formula, data = por_trn, method = "glm", family = "binomial", trControl = cv_5, tuneLength=5)
+glm_step_sel_trn = accuracy(actual = por_trn$school, predicted = predict(glm_step_sel, por_trn))
+glm_step_sel_tst = accuracy(actual = por_tst$school, predicted = predict(glm_step_sel, por_tst))
+```
+
+##### Selection Conclusion
+Based on the results above and all selection methods applied earlier, we will consider variables G3, age, absences, address, traveltime, internet, Medu, Fedu, reason, studytime, freetime, Fjob, goout when building model using each methods. For each model below, some further selection based on the variable selected above might be utilized to obtain the best model.
+
+#### Methods for Classification
+
+
+##### We will consider six methods:
+1. Additive Logistic Model(glm)
+2. Logistic model with partial predictors(glm)
+3. Penalized Logistic Model(glmnet)
+4. Discriminant Analysis(rda)
+5. Boosting(gbm)
+6. Random Forest with all predictors(rf)
+7. Random Forest with selected predictors(rf)
+8. K-Near Neighborhood(knn)
+
+##### For each method we will consider different sets of features:
+
+1. Additive Logistic Model: All the features 
+2. Logistic model with partial predictors: All the selected features
+3. Penalized Logistic Mode: All the selected features and their interaction terms
+4. Discriminant Analysis: All the selected features
+5. Boosting: All the selected features
+6. Random Forest with all predictors: All the features except G1, G2
+7. Random Forest with selected predictors
+8. K-Near Neighborhood: All the selected features. 
+
+Tuning will be done using 5-fold cross-validation.
+
+##### Base Model: Additive Logistic Model
+```{r}
+set.seed(430)
+glm_add = train(school ~ . , data = por_trn, method = "glm", trControl = cv_5, tuneLength=5)
+```
+
+```{r, include=FALSE}
+glm_add_trn = accuracy(actual = por_trn$school, predicted = predict(glm_add, por_trn))
+glm_add_tst = accuracy(actual = por_tst$school, predicted = predict(glm_add, por_tst))
+```
+
+Addictive Logistic Regression is fitted above using caret with method = "glm" which using a factor response automatically uses family = "binomial". We simply specify a tuning grid length = 5. We also use variables based on feature selection. This model is linear, parametric and discriminant. The train accuracy for Addictive Logistic Regression is 0.810, the test accuracy for ddictive Logistic Regression is 0.752.
+
+
+##### Other Models
+
+Besides the model show below, we also tried naive bayes and additive models for each method used. The models shown below are those perform relatively better.
+
+###### Logistic Models
+```{r}
+set.seed(430)
+glm_sel = train(school ~  G3 + age + absences + address + traveltime + internet +  Medu + Fedu + reason + studytime + Fjob + freetime + goout, data = por_trn, method = "glm", trControl = cv_5)
+```
+
+```{r, include=FALSE}
+glm_sel_trn = accuracy(actual = por_trn$school, predicted = predict(glm_sel, por_trn))
+glm_sel_tst = accuracy(actual = por_tst$school, predicted = predict(glm_sel, por_tst))
+```
+
+Selected Logistic Regression is fitted above using caret with method = "glm" which using a factor response automatically uses family = "binomial". There is nothing to tune. We also use variables based on feature selection. This model is linear, parametric and discriminant. The train accuracy for Selected Logistic Regression is 0.785, the test accuracy for Selected Logistic Regression is 0.767.
+
+
+###### Penalized Logistic Model
+
+```{r}
+set.seed(430)
+enet = train( school ~ (G3 + age + absences + address + traveltime + internet +  Medu + reason + studytime + Fjob + goout + freetime)^2 , data = por_trn, method = "glmnet", trControl = cv_5, tuneLength = 10)
+```
+
+```{r, include=FALSE}
+enet_trn = accuracy(predict(enet, por_trn), por_trn$school)
+enet_tst = accuracy(predict(enet, por_tst), por_tst$school)
+```
+
+Penalized Logistic Model is fitted above using caret with method = "glmnet". We simply specify a tuning grid length = 10. We also use variables based on feture selection. This model is linear, parametric and generative. The train accuracy for Penalized Logistic Model is 0.806, the test accuracy for Penalized Logistic Model is 0.798.
+
+
+###### Discriminant Analysis
+```{r}
+set.seed(430)
+rda_class = train(school ~  G3 + age + absences + address + internet +  Medu + traveltime + reason + studytime +Fjob + freetime +goout, data = por_trn, method = "rda", trControl = cv_5, tuneLength=10)
+```
+
+```{r, echo=FALSE}
+rda_trn = accuracy(predict(rda_class, por_trn), por_trn$school)
+rda_tst = accuracy(predict(rda_class, por_tst), por_tst$school)
+```
+
+Regularized Discriminant Analysis is fitted above using caret with method = "rda". We simply specify a tuning grid length = 10. We also use variables based on feature selection. This model is linear, parametric and discriminant. The train accuracy for Regularized Discriminant Analysis is 0.802, the test accuracy for Regularized Discriminant Analysis is 0.752.
+
+
+###### Boosting Tree
+```{r}
+set.seed(430)
+gbm_sel_class = train(school ~  G3 + age + absences + address + traveltime + internet + Medu + Fedu + reason + studytime + Fjob + goout ,data=por_trn,method = "gbm", verbose = FALSE, trControl = cv_5, tuneGrid = gbm_grid)
+```
+
+```{r, include=FALSE}
+gbm_sel_class_trn = accuracy(actual = por_trn$school, predicted = predict(gbm_sel_class, por_trn))
+gbm_sel_class_tst = accuracy(actual = por_tst$school, predicted = predict(gbm_sel_class, por_tst))
+```
+
+Boosting Model is fitted above using caret with methos = "gbm". We use expand turning  parameters grid: number of trees = (1:6) * 500, tree depth = 1:5, shrinkage parameter = c(0.001, 0.01, 0.1) and number of minobsinnode = 10. We also use variables based on feature selection. This model is non-linear, parametric and generative. The train accuracy for Boosting Model is 0.842, the test accuracy for Boosting Model is 0.791.
+
+
+
+###### Random Forest
+```{r}
+set.seed(430)
+# Random forest with all variables
+rf_grid_all=expand.grid(mtry=1:30)
+rf_all_class=train(school~.-G1-G2,data=por_trn,method="rf",trControl=oob,verbose=FALSE,tuneGrid = rf_grid_all)
+rf_all_class$bestTune
+
+set.seed(430)
+# Random forest with selected model
+rf_grid_sel =  expand.grid(mtry = 1:13)
+rf_sel_class=train(school~  G3 + age + absences + address + traveltime + internet +  Medu + Fedu+ reason + studytime + Fjob + goout + freetime , data = por_trn, method="rf", trControl=oob, verbose=FALSE, tuneGrid=rf_grid_sel)
+rf_sel_class$bestTune
+```
+
+
+```{r, include=FALSE}
+rf_all_class_trn = accuracy(predict(rf_all_class,por_trn),por_trn$school)
+rf_all_class_tst = accuracy(predict(rf_all_class,por_tst),por_tst$school)
+
+rf_sel_class_trn = accuracy(predict(rf_sel_class,por_trn),por_trn$school) 
+rf_sel_class_tst = accuracy(predict(rf_sel_class,por_tst),por_tst$school)
+```
+
+Random forest is a discriminant model with tuning parameter mtry from one predictor to all predictors (additive or selected). It is commonly used for prediction and usually performs suprisingly well. From the result, we can see that random forest gives very high accuracies in this case. The best tune parameter for addtive random forest is mtry=17. The best tune parameter for selected random forest is mtry=4. The accuracy for selected random forest is highest one with the number of 0.837. 
+
+
+###### KNN
+
+```{r}
+# KNN
+knn_class = train( school ~ G3 + age + absences + address + internet + freetime + traveltime + studytime + reason + Fedu + Medu + Fjob + goout, data = por_trn, method = "knn", trControl = trainControl(method = "cv", number = 5), tuneGrid = expand.grid(k = seq(1, 20, by = 1)))
+plot(knn_class)
+```
+
+
+```{r, include=FALSE}
+knn_class_trn = accuracy(predict(knn_class,por_trn),por_trn$school)
+knn_class_tst = accuracy(predict(knn_class,por_tst),por_tst$school)
+```
+
+KNN is non-parameter model. In order to find the tuning parameter, we set the grid of k from 1 to 20. From the U-shape plot, we find that highest accuracy appears in this range. Thus, we had choose enough values of k. From the result, we can see that KNN perform better than additive logistic model with accuracy of 0.783. 
+
+
+##### Final Model
+As we can see, random forest with further selection `rf_sel_class` has the best test accuracy and it will be our final model.
+
+#### Results and Discussion
+##### Summary Results
+
+```{r, include=FALSE}
+method = c("Additive Logistic Model", 
+           "Selected Logistic Model", 
+           "Penalized Logistc", 
+           "Selected RDA", 
+           "Selected Boosting Model",
+           "Additive Random Forest",
+           "Selected Random Forest w Interactions", 
+           "Selected KNN") 
+
+train_acc = c(glm_add_trn, 
+              glm_sel_trn, 
+              enet_trn,
+              rda_trn,
+              gbm_sel_class_trn, 
+              rf_all_class_trn, 
+              rf_sel_class_trn,
+              knn_class_trn)
+
+test_acc = c(glm_add_tst, 
+              glm_sel_tst, 
+              enet_tst,
+              rda_tst,
+              gbm_sel_class_tst, 
+              rf_all_class_tst, 
+              rf_sel_class_tst,
+              knn_class_tst)
+
+results = data.frame(method, train_acc, test_acc)
+colnames(results) = c("Methods", "Train Accuracy", "Test Accuracy")
+```
+
+
+```{r, echo=FALSE}
+knitr::kable(results)
+```
+
+##### Discussion
+
+As our best model is random forest, it is hard to interpret the model itself. However, we could look at the features selected. Each of the feature selected makes sense for classify the schools. As shown before, GP students tend to have higher G3 grades etc. GP might be a school with better education resources in comparison to the other one. As the highest accuracy is about 0.83. There is indeed difference between the two schools and hence their students.
+
+## Regression: G1
+
+Now we move to predicting students' first period grade G1 using regression models. We used a different data split ratio and seed which increased models performances slightly.
+
+```{r}
+id2 = createDataPartition(student_por$G3, p = 0.75, list = F)
+por_trn_reg= student_por[id2, ]
+por_tst_reg = student_por[-id2, ]
+```
+
+
+#### Data Exploration and Feature Selection
+
+##### Histogram of Response G1
+
+Below is the histogram of G1 which is a continuous variable. 
+```{r, echo=FALSE}
+histogram(por_trn_reg$G1)
+```
+
+##### Feature Plot of continuous variable
+The feature plots below suggest weak relationship between the two predictors and G1.
+
+```{r, echo=FALSE}
+featurePlot(x = por_trn_reg[,c("absences", "age") ], 
+            y = por_trn_reg$G3, 
+            plot = "scatter",
+            type = c("p", "smooth"),
+            span = 1,
+            layout = c(4, 1))
+```
+
+##### Correlation plot with G1
+
+The correlation plot of G1 and other numeric variables is shown below. Medu, Fedu, traveltime, faliures, freetime, goout, Dalc, Walc, absences
+all seem to be correlated with students' frist period grade G1 and could be potential predictors in our model. Similary, we may not want to include G2 and G3 in the models when predicting G1. 
+
+```{r, echo=FALSE}
+M = cor(data.frame(por_trn_reg[, c(3,7,8,13,14,15,24,25,26,27,28,29,30)], response = as.numeric(por_trn_reg[, 31])))
+corrplot(M, method = "circle")
+```
+
+##### Boxplot for categorical variable
+Below are the boxplots of G1 against categorical variables including school, guardian, Walc, Pstatus, Dalc, reason, higher and Mjob. The plots suggest that students' grade G1 vary in terms of these features, which could be useful predictors in our regression models.
+
+```{r, echo=FALSE}
+par(mfrow = c(1,4))
+boxplot(G1~school, data = por_trn, xlab = "School")
+boxplot(G1~guardian, data = por_trn, xlab = "Student's Guardian")
+boxplot(G1~Walc, data = por_trn, xlab = "Weekend Alcohol Consumption")
+boxplot(G1~Pstatus, data = por_trn, xlab = "Parent's Cohabitation Status")
+boxplot(G1~Dalc, data = por_trn, xlab = "Workday Alchohol Consumption")
+boxplot(G1~reason, data = por_trn, xlab = "Reason to Choose this school")
+boxplot(G1~higher, data = por_trn, xlab = "Wants to Take Higher Education")
+boxplot(G1~Mjob, data = por_trn, xlab = "Mother's Job")
+```
+
+Similar to what we did for classification, we fitted an additive boosting and a single regression tree to obtain the variable importance plot and importance values and identify useful features for prediction.
+
+##### Boosting importance plot
+```{r, include=FALSE}
+gbm_grid =  expand.grid(interaction.depth = 1:5,
+                        n.trees = (1:6) * 500,
+                        shrinkage = c(0.001, 0.01, 0.1),
+                        n.minobsinnode = 10)
+
+gbm_all_reg = train(G1 ~ . - G2 - G3, data = por_trn_reg,
+                      method = "gbm",
+                      trControl = cv_5,
+                      verbose = FALSE,
+                      tuneGrid = gbm_grid)
+```
+
+
+```{r, echo=FALSE}
+head(summary(gbm_all_reg), 15) # obtain variable inportance plot
+
+gbm_all_reg_trn = rmse(predict(gbm_all_reg , por_trn_reg), por_trn_reg$G1) # train rmse
+gbm_all_reg_tst = rmse(predict(gbm_all_reg , por_tst_reg), por_tst_reg$G1) # test rmse
+```
+
+##### Single Regression Tree: tree and importance
+```{r, include=FALSE}
+set.seed(42)
+dt_all_reg = rpart(G1 ~ . - G2 - G3, data = por_trn_reg, method = "anova")
+#plotcp(dt_all_reg )
+
+dt_all_reg_cp = dt_all_reg $cptable[which.min(dt_all_reg $cptable[,"xerror"]),"CP"]
+dt_reg_prune = prune(dt_all_reg, cp = dt_all_reg_cp)
+prp(dt_reg_prune)
+
+head(dt_reg_prune$variable.importance, 15)
+
+dt_reg_prune_trn = rmse(predict(dt_reg_prune, por_trn_reg), por_trn_reg$G1) # train rmse
+dt_reg_prune_tst = rmse(predict(dt_reg_prune, por_tst_reg), por_tst_reg$G1) # test rmse
+```
+
+The tuned regression tree ended up samll. The misclassification rate and tree size plot indicates smaller tree size have lower cp. The results suggest that simpler model could perform better in this case. 
+
+Thus in the following, we used stepwise method and lasso panelities to select key predictors. 
+
+##### Stepwise lm
+```{r, echo=FALSE}
+# Stepwise lm
+lm_step = step(lm(G1 ~ . -G2-G3, data = por_trn_reg), trace = FALSE)
+# Update lm model 
+(selected_formula = lm_step$call$formula)
+lm_step_sel = train(selected_formula, data = por_trn_reg, method = "lm", trControl = cv_5)
+lm_step_sel_trn = rmse(actual = por_trn_reg$G1, predicted = predict(lm_step_sel, por_trn_reg))
+lm_step_sel_tst = rmse(actual = por_tst_reg$G1, predicted = predict(lm_step_sel, por_tst_reg))
+```
+##### LASSO
+```{r, echo=FALSE}
+X = model.matrix(G1 ~ .-G2-G3, data = por_trn_reg)[, -1]
+y = por_trn_reg$G1
+lasso_reg = cv.glmnet(X, y, alpha = 1)
+result_lasso = coef(lasso_reg)
+names(which(!(result_lasso == 0)[, 1]))[-1]
+```
+
+##### Selection Result
+Combing all the feature selection results above, the main features we are interested for regression prediction are failures, higher, school, Fedu, absences, studytime, Medu, Fedu, address, goout, schoolsup, Fjob, Dalc, freetime and health.
+
+#### Methods for Regression
+
+##### We will consider six methods:
+1. Simple linear Regression(lm)
+2. Penalized Linear Model, Elastic-Net(glmnet)
+3. Generalized Models(gamSpline)
+4. Boosting(gbm)
+5. Random Forest(rf)
+6. K-Near Neighborhood(knn)
+
+##### For each method we will consider different sets of features:
+1. Simple linear regression: All features except G2, G3
+2. Penalized Linear Regression: failures, higher, absences, studytime, Medu, Fedu, goout, schoolsup, Dalc, health
+3. Genealized Models, Boosting, Random forest, KNN: failures, higher, absences, studytime, Medu, Fedu, Medu*Fedu, goout, schoolsup, Dalc, health
+
+Tuning will be done using 5-fold cross-validation.
+
+###### Base Model: Simple Linear Regression
+
+```{r}
+set.seed(42)
+lm_add = lm(G1 ~ . - G2 - G3, data = por_trn_reg)
+```
+
+```{r, echo=FALSE}
+lm_add_trn = rmse(predict(lm_add, por_trn_reg), por_trn_reg$G1) # train rmse
+lm_add_tst = rmse(predict(lm_add, por_tst_reg), por_tst_reg$G1) # test rmse
+```
+
+Simple linear regression is our base model.It is a linear, parametric, discriminant model. We will compare this result with all the other model. We think this model is the simplest one with all the predictors included except G2, G3. We think G2, G3 must have very high correlation with G1, if we include these two, our model will become less meanningful. From the result, we can see that RMSE of Simple linear regression is 2.325.
+
+###### Penalized Linear Model
+
+```{r}
+set.seed(42)
+glmn_small = train(G1 ~ failures + higher + absences + studytime + Medu + Fedu + goout + schoolsup + Dalc + health, data = por_trn_reg, method = "glmnet", trControl = cv_5, tuneLength = 10)
+```
+
+```{r, echo=FALSE}
+glmn_small_trn = rmse(predict(glmn_small, por_trn_reg), por_trn_reg$G1) # train rmse
+glmn_small_tst = rmse(predict(glmn_small, por_tst_reg), por_tst_reg$G1) # test rmse
+```
+
+Penalized Linear Model is fit above using caret with method = "glmnet". We simply specify a tuning grid length = 10. We also use variables based on feture selection. This model is linear, parametric and generative. From the result, we can see that RMSE of KNN Penalized Linear Model is 2.326.
+
+###### Generalized Models
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(42)
+gam_grid =  expand.grid(df = seq(1, 5, by = 0.5))
+
+gam_small  = train(
+G1 ~ failures + higher + absences + studytime + Medu * Fedu + goout + schoolsup + Dalc + health,
+data = por_trn_reg,
+method = "gamSpline",
+verbose = FALSE,
+trControl = cv_5,
+tuneGrid = gam_grid
+)
+```
+
+```{r, echo=FALSE}
+gam_small_trn = rmse(predict(gam_small, por_trn_reg), por_trn_reg$G1) # train rmse
+gam_small_tst = rmse(predict(gam_small, por_tst_reg), por_tst_reg$G1)# test rmse
+```
+
+
+Generalized Model is fit above using caret with method = "gamSpline". We specify a number of degrees of freedom to try(seq(1, 5, by = 0.5)). We also use variables based on feture selection. This model is non-linear parametric and generative. From the result, we can see that Generalized Model performs better than simple linear regression with RMSE 2.321.
+
+
+###### Boosting
+```{r}
+set.seed(42)
+
+gbm_small = train(G1 ~ failures + higher +absences + studytime + Medu * Fedu + goout + schoolsup + Dalc + health, method = "gbm", data = por_trn_reg, verbose = FALSE, trControl = cv_5, tuneGrid = gbm_grid)
+```
+
+```{r, echo=FALSE}
+gbm_small_trn = rmse(predict(gbm_small, por_trn_reg), por_trn_reg$G1) # train rmse
+gbm_small_tst = rmse(predict(gbm_small, por_tst_reg), por_tst_reg$G1) # test rmse
+```
+
+Boosting is fit above using caret with methos = "gbm". We use expand turning  parameters grid: number of trees = (1:6) * 500, tree depth = 1:5, shrinkage parameter = c(0.001, 0.01, 0.1) and number of minobsinnode = 10. We also use variables based on feture selection. This model is non-linear, parametric and generative. From the result, we can see that Boosting performs best in these models with RMSE 2.220.
+
+###### Random Forest
+```{r, message=FALSE, warning=FALSE}
+set.seed(42)
+
+
+## Random forest with selection 
+rf_grid_small = expand.grid(mtry = 1: 11) 
+rf_small_reg=train(G1~ failures+higher+absences+studytime+Medu*Fedu+goout+schoolsup+Dalc+health,data=por_trn_reg,method="rf",trControl=cv_5,verbose=FALSE,tuneGrid=rf_grid_small)
+```
+
+```{r, echo=FALSE}
+rf_small_reg_trn=rmse(predict(rf_small_reg,por_trn_reg),por_trn_reg$G1)
+rf_small_reg_tst=rmse(predict(rf_small_reg,por_tst_reg),por_tst_reg$G1)
+```
+
+
+Random forest is a discriminant model with tuning parameter mtry from one predictor to all 11 selected predictors. From the result, we can see that random forest perfrom well in this case which has the rmse of 2.510. Besides, it has very low train rmse. It might be suggesting that random forest can solve the overfitting problem of decision tree and be more suitable in this case. From the result, we can see that Random forest performs better than simple linear refression with test RMSE of 2.283.
+
+
+###### KNN
+
+```{r}
+set.seed(42)
+
+# KNN with further selection 
+knn_reg_small = train(
+  G1 ~ failures+higher+absences+studytime+Medu*Fedu+goout+schoolsup+Dalc+health ,
+  data = por_trn_reg, 
+  method = "knn",
+  trControl = trainControl(method = "cv", number = 5),
+  preProcess = c("center", "scale"),
+  tuneGrid = expand.grid(k = seq(1, 50, by = 1))
+)
+```
+
+
+```{r, echo=FALSE}
+plot(knn_reg_small)
+
+knn_small_reg_trn=rmse(predict(knn_reg_small,por_trn_reg),por_trn_reg$G1)
+knn_small_reg_tst=rmse(predict(knn_reg_small,por_tst_reg),por_tst_reg$G1)
+```
+
+
+KNN is non-parameter model. In order to find the tuning parameter, we set the grid of k from 1 to 50. From the plot, we can see that lowest rmse appear in this range. Thus, we must choose enough number of k. From the result, we can see that KNN perform well in this case which has lowest rmse with the number of 2.543. Since we have enough observation and limited features, it seems KNN is reasonable. From the result, we can see that RMSE of KNN is 2.234.
+
+
+##### Final Model
+
+Considering the rmse resulst of all models and boosting model is our final model for the regression task with best test rmse. The final predictor failures, higher, absences, studytime, Medu*Fedu, goout, schoolsup, Dalc, health. Its test rmse is 2.221. 
+
+#### Result and Discussion
+##### Summary Results
+
+```{r, include=FALSE}
+model = c("Simple Linear Regression",
+          "Penalized Linear Regression",
+          "Generalized Models",
+          "Boosting Model", 
+          "Random Forest",
+          "KNN")
+
+train_rmse = c(lm_add_trn,glmn_small_trn,gam_small_trn,gbm_small_trn,rf_small_reg_trn,knn_small_reg_trn)
+
+test_rmse = c(lm_add_tst,glmn_small_tst,gam_small_tst,gbm_small_tst,rf_small_reg_tst,knn_small_reg_tst)
+               
+
+tables = data.frame(model, train_rmse, test_rmse)
+colnames(tables) = c("Model", "Train RMSE", "Test RMSE")
+```
+
+
+```{r, echo=FALSE}
+knitr::kable(tables)
+```
+
+##### Discussion
+Among the 7 model, boosting model performs best with lowest test rmse 2.2208 which are obviously lower than the rmse of the base model (simple linear regression). Boosting with tuned parameters has best result. 
+
+
+In additions, Generalized models(gam), KNN and random forest all reduce the test rmse. Actually they are all reasonal method to do the regression. Particularly, random forest has obvious lower train rmse than the other which means that it deal with train data very well. Besides test rmse for random forest is also lower than base. Both indicates that in this particular case, random forest is another good method. 
+
+The features used in regression model such as faliure times, absences, mothers and fathers' educations etc. are reaonsbaly factors explaining students' grades. We would expect a student who are usually absent from classes perform not as well in an exam as those who presents everyday. 
+
+
+
+```{r}
+library(knitr)
+purl("Project Anaysis Report.Rmd", output = "AnalysisReport.R", documentation = 1)
+```
+
+```{r code = readLines(knitr::purl("path/to/file.Rmd", documentation = 1)), echo = T, eval = F}
+```
+
+
+
+
+
+
